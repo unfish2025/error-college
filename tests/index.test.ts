@@ -1,10 +1,16 @@
-import { ErrorCollege } from '../src/main.js'
+import { ErrorCollege } from '../src/index.js'
 
 const errorCollege = new ErrorCollege({
 	instanceId: 'test-instance',
 	storageType: 'memory',
-	expireTime: 2 * 1000
+	hijackConsoleError: true
 })
+// @ts-ignore
+window.errorCollege = errorCollege
+// @ts-ignore
+window.say = async function () {
+	throw new Error('Test say error')
+}
 
 await errorCollege.add(new Error('Test error 1'), { info: 'meta1' })
 await errorCollege.add(
@@ -39,19 +45,26 @@ class CustomError extends Error {
 }
 await errorCollege.add(new CustomError('Test CustomError'))
 
-const container = document.querySelector('.container')
-if (container) {
-	const format = await errorCollege.format()
-	container.innerHTML = '<pre>' + format + '</pre>'
-	console.log(format)
-} else {
-	const container = document.createElement('div')
-	container.className = 'container'
-	const format = await errorCollege.format()
-	container.innerHTML = '<pre>' + format + '</pre>'
-	document.body.appendChild(container)
-	console.log(format)
+async function output() {
+	const container = document.querySelector('.container')
+	if (container) {
+		const format = await errorCollege.format()
+		container.innerHTML = '<pre>' + format + '</pre>'
+		console.log(format)
+	} else {
+		const container = document.createElement('div')
+		container.className = 'container'
+		const format = await errorCollege.format()
+		container.innerHTML = '<pre>' + format + '</pre>'
+		document.body.appendChild(container)
+		console.log(format)
+	}
 }
+await output()
 
-const list = await errorCollege.getAll()
-console.log('All errors:', list.length)
+// @ts-ignore
+window.output = output
+setTimeout(() => {
+	// @ts-ignore
+	window.say()
+})
