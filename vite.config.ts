@@ -6,10 +6,10 @@ export default defineConfig({
 	build: {
 		target: 'es2015',
 		lib: {
-			entry: process.env.VITE_APP_PATH || './src/main.ts',
+			entry: process.env.VITE_APP_PATH || './src/index.ts',
 			name: 'ErrorCollege',
 			formats: ['es'],
-			fileName: 'main'
+			fileName: 'index'
 		}
 	},
 	resolve: {
@@ -20,7 +20,7 @@ export default defineConfig({
 	},
 	plugins: [
 		dts({
-			include: ['./src/main.ts']
+			include: ['./src']
 		})
 	]
 })
