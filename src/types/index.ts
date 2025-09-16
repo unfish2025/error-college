@@ -1,4 +1,3 @@
-
 export type StorageType = 'memory' | 'localStorage' | 'indexedDB'
 
 export interface Options<T extends StorageType = StorageType> {
@@ -6,11 +5,9 @@ export interface Options<T extends StorageType = StorageType> {
 	/** unit: ms, default: 2 days */
 	expireTime?: number
 	storageType: T
-	onError?: (
-		self: any,
-		error: ErrorEvent | PromiseRejectionEvent | string | any,
-		meta?: any
-	) => void
+	/** default: false */
+	listenAssetError?: boolean
+	onError?: (self: any, error: ErrorEvent | PromiseRejectionEvent | string | any, meta?: any) => void
 	/** default: false */
 	hijackConsoleError?: boolean
 }

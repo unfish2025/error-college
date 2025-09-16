@@ -16,6 +16,10 @@ export class ErrorCollege<T extends StorageType = StorageType> {
 	private _errorList: ErrorItem[] = []
 	private _plugins: ((error: any, meta?: any) => [error: any, meta?: any] | null | void)[] = []
 	private _logError = console.error
+	private _useCapture: boolean = false
+	private _hijacked: boolean = false
+	private _onWindowError?: (e: ErrorEvent) => void
+	private _onUnhandledRejection?: (e: PromiseRejectionEvent) => void
 
 	get instanceId() {
 		return this._instanceId
@@ -69,19 +73,25 @@ export class ErrorCollege<T extends StorageType = StorageType> {
 		this._storageType = op.storageType
 		this._onError = op.onError
 		if (op.expireTime) this._expireTime = op.expireTime
-		window.addEventListener('error', async (e) => {
-			await this.add(e)
-			this._onError?.(this, e, { from: 'window.error' })
-		})
-		window.addEventListener('unhandledrejection', async (e) => {
-			await this.add(e)
-			this._onError?.(this, e, { from: 'window.unhandledrejection' })
-		})
+		this._useCapture = !!op.listenAssetError
+		this._onWindowError = (e: ErrorEvent) => {
+			Promise.resolve(this.add(e, { from: 'window.error' })).then(() => {
+				this._onError?.(this, e, { from: 'window.error' })
+			})
+		}
+		window.addEventListener('error', this._onWindowError, this._useCapture)
+		this._onUnhandledRejection = (e: PromiseRejectionEvent) => {
+			Promise.resolve(this.add(e, { from: 'window.unhandledrejection' })).then(() => {
+				this._onError?.(this, e, { from: 'window.unhandledrejection' })
+			})
+		}
+		window.addEventListener('unhandledrejection', this._onUnhandledRejection)
 		this.clearExpired()
 		if (op.hijackConsoleError) {
+			this._hijacked = true
 			console.error = (...args: any[]) => {
 				this._logError(...args)
-				this.add(args, { from: 'console.error' })
+				void this.add(args, { from: 'console.error' })
 			}
 		}
 	}
@@ -212,6 +222,12 @@ export class ErrorCollege<T extends StorageType = StorageType> {
 					return `Error({name:${handle(data.name)},message:${handle(data.message)},stack:${handle(data.stack)}${
 						data.cause ? ',cause:' + handle((data as any).cause) : ''
 					}${Object.keys(data) ? ',' + Object.entries(data).map(([k, v]) => `${k}: ${handle(v)}`) : ''}})`
+				} else if (data instanceof ErrorEvent) {
+					return `ErrorEvent({type:${handle(data.type)},message:${handle(data.message)},filename:${handle(
+						data.filename
+					)},lineno:${handle(data.lineno)},colno:${handle(data.colno)},error:${handle(data.error)}})`
+				} else if (data instanceof PromiseRejectionEvent) {
+					return `PromiseRejectionEvent({type:${handle(data.type)},reason:${handle(data.reason)}})`
 				}
 				let res = '{'
 				const keys = Object.keys(data)
@@ -357,5 +373,22 @@ export class ErrorCollege<T extends StorageType = StorageType> {
 		} else {
 			return ErrorCollege.format(list as ErrorItem[], options)
 		}
+	}
+
+	// 释放全局监听与 console.error 劫持
+	destroy() {
+		if (this._onWindowError) {
+			window.removeEventListener('error', this._onWindowError, this._useCapture)
+			this._onWindowError = void 0
+		}
+		if (this._onUnhandledRejection) {
+			window.removeEventListener('unhandledrejection', this._onUnhandledRejection)
+			this._onUnhandledRejection = void 0
+		}
+		if (this._hijacked) {
+			console.error = this._logError
+			this._hijacked = false
+		}
+		return this
 	}
 }
