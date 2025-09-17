@@ -1,4 +1,4 @@
-import type { ErrorItem, StorageType, Options, ErrorItemOptions } from './types/index.js'
+import type { ErrorItem, StorageType, Options, ErrorItemOptions, Plugin, FormatOptions } from './types/index.js'
 import { idbAdd, idbGetAll, idbClear, idbClearExpired } from './createIndxDB.js'
 export type * from './types/index.js'
 
@@ -12,9 +12,9 @@ export class ErrorCollege<T extends StorageType = StorageType> {
 	private _instanceId: string
 	private _expireTime: number = 2 * 24 * 60 * 60 * 1000
 	private _storageType: T
-	private _onError?: (self: ErrorCollege, error: ErrorEvent | PromiseRejectionEvent | any, meta?: any) => void
+	private _onError?: (self: ErrorCollege, error: any, meta?: any) => void
 	private _errorList: ErrorItem[] = []
-	private _plugins: ((error: any, meta?: any) => [error: any, meta?: any] | null | void)[] = []
+	private _plugins: Plugin<ErrorCollege>[] = []
 	private _logError = console.error
 	private _useCapture: boolean = false
 	private _hijacked: boolean = false
@@ -100,7 +100,7 @@ export class ErrorCollege<T extends StorageType = StorageType> {
 		}
 	}
 
-	use(plugin: (error: any, meta?: any) => [error: any, meta?: any] | null | void) {
+	use(plugin: Plugin<ErrorCollege>) {
 		if (typeof plugin !== 'function') {
 			throw new Error('plugin must be a function')
 		}
@@ -114,7 +114,7 @@ export class ErrorCollege<T extends StorageType = StorageType> {
 	add(this: ErrorCollege<StorageType>, error: any, meta?: any): any {
 		let data = [error, meta]
 		for (const plugin of this._plugins) {
-			const newData = plugin(data[0], data[1])
+			const newData = plugin(this, data[0], data[1])
 			if (newData === null || newData === void 0) {
 				return this.storageType === 'indexedDB' ? Promise.resolve(this) : this
 			}
@@ -138,8 +138,12 @@ export class ErrorCollege<T extends StorageType = StorageType> {
 			return idbAdd(
 				this.instanceId,
 				this.dataToInfo({ error: data[0], meta: data[1], stack: new Error().stack || '' })
-			).then(() => this)
+			).then(() => {
+				this._onError?.(this, data[0], data[1])
+				return this
+			})
 		}
+		this._onError?.(this, data[0], data[1])
 		return this
 	}
 
@@ -148,7 +152,7 @@ export class ErrorCollege<T extends StorageType = StorageType> {
 			error: this._dataToString(data.error),
 			meta: this._dataToString(data.meta),
 			createTime: new Date().toISOString(),
-			stack: this._dataToString(data.stack)
+			stack: this._dataToString(data.stack ?? (new Error().stack || ''), false)
 		}
 	}
 
@@ -187,18 +191,18 @@ export class ErrorCollege<T extends StorageType = StorageType> {
 		}
 	}
 
-	private _dataToString(data: any): string {
+	private _dataToString(data: any, stringAddQuotationMarks = true): string {
 		const weakSet = new WeakSet()
 		const handle = (data: any, deep = true): string => {
 			// deep is false, return a shallow description
 			if (!deep) {
 				if (Array.isArray(data)) {
-					return `[Array(${data.length})]`
+					return `Array(length:${data.length})`
 				}
 				if (typeof data === 'object' && data !== null) {
 					const keys = Object.keys(data)
 					const ctor = (data as any)?.constructor?.name || 'Object'
-					return `{${ctor} keys:${keys.join(',')}}`
+					return `Object(${ctor ? `class:${ctor}` : ''} keys:${keys.join(',')})`
 				}
 				return String(data)
 			}
@@ -254,7 +258,11 @@ export class ErrorCollege<T extends StorageType = StorageType> {
 				}
 				return res.slice(0, -1) + '}'
 			} else if (typeof data === 'string') {
-				return `"${data}"`
+				if (stringAddQuotationMarks) {
+					return `"${data}"`
+				} else {
+					return data
+				}
 			} else if (typeof data === 'function') {
 				if (/^[A-Z]/.test(data.name)) {
 					return `Class(${data.name})`
@@ -269,14 +277,35 @@ export class ErrorCollege<T extends StorageType = StorageType> {
 		return handle(data)
 	}
 
-	static format(
-		errorList: ErrorItem[],
-		options?: {
-			indent?: number | string
-			newline?: '\\n' | '\\r\\n'
-			colonSpace?: boolean
+	// Overloads for instance format
+	format(this: ErrorCollege<'indexedDB'>, options?: FormatOptions): Promise<string>
+	format(this: ErrorCollege<'memory' | 'localStorage'>, options?: FormatOptions): string
+	format(this: ErrorCollege<StorageType>, options?: FormatOptions): Promise<string> | string {
+		const list = this.getAll()
+		if (this.storageType === 'indexedDB') {
+			return (async () => ErrorCollege.format((await list) as ErrorItem[], options))()
+		} else {
+			return ErrorCollege.format(list as ErrorItem[], options)
 		}
-	): string {
+	}
+
+	destroy() {
+		if (this._onWindowError) {
+			window.removeEventListener('error', this._onWindowError, this._useCapture)
+			this._onWindowError = void 0
+		}
+		if (this._onUnhandledRejection) {
+			window.removeEventListener('unhandledrejection', this._onUnhandledRejection)
+			this._onUnhandledRejection = void 0
+		}
+		if (this._hijacked) {
+			console.error = this._logError
+			this._hijacked = false
+		}
+		return this
+	}
+
+	static format(errorList: ErrorItem[], options?: FormatOptions): string {
 		const indentUnit =
 			typeof options?.indent === 'number'
 				? ' '.repeat(Math.max(0, options!.indent as number))
@@ -374,40 +403,7 @@ export class ErrorCollege<T extends StorageType = StorageType> {
 		return out
 	}
 
-	// Overloads for instance format
-	format(
-		this: ErrorCollege<'indexedDB'>,
-		options?: { indent?: number | string; newline?: '\\n' | '\\r\\n'; colonSpace?: boolean }
-	): Promise<string>
-	format(
-		this: ErrorCollege<'memory' | 'localStorage'>,
-		options?: { indent?: number | string; newline?: '\\n' | '\\r\\n'; colonSpace?: boolean }
-	): string
-	format(
-		this: ErrorCollege<StorageType>,
-		options?: { indent?: number | string; newline?: '\\n' | '\\r\\n'; colonSpace?: boolean }
-	): Promise<string> | string {
-		const list = this.getAll() as any
-		if (this.storageType === 'indexedDB') {
-			return (async () => ErrorCollege.format((await list) as ErrorItem[], options))()
-		} else {
-			return ErrorCollege.format(list as ErrorItem[], options)
-		}
-	}
-
-	destroy() {
-		if (this._onWindowError) {
-			window.removeEventListener('error', this._onWindowError, this._useCapture)
-			this._onWindowError = void 0
-		}
-		if (this._onUnhandledRejection) {
-			window.removeEventListener('unhandledrejection', this._onUnhandledRejection)
-			this._onUnhandledRejection = void 0
-		}
-		if (this._hijacked) {
-			console.error = this._logError
-			this._hijacked = false
-		}
-		return this
+	static formatOne(errorItem: ErrorItem, options?: FormatOptions) {
+		return ErrorCollege.format([errorItem], options)
 	}
 }

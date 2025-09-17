@@ -85,4 +85,52 @@ describe('indexedDB Storage', () => {
 		expect(errors[0].createTime).toBeDefined()
 		expect(errors[0].stack).toBeDefined()
 	})
+
+	it('should use plugins correctly', async () => {
+		const errorCollege1 = new ErrorCollege({
+			instanceId: 'test-indexedDB-plugins',
+			storageType: 'indexedDB',
+			listenWindowError: false,
+			listenWindowUnhandledRejection: false
+		})
+
+		errorCollege1.use((_self, _error, _meta) => {
+			return null
+		})
+
+		await errorCollege1.add({ a: 1 }, 'Test meta 1')
+		const errors = await errorCollege1.getAll()
+		expect(errors).toHaveLength(0)
+
+		const errorCollege2 = new ErrorCollege({
+			instanceId: 'test-indexedDB-plugins-2',
+			storageType: 'indexedDB',
+			listenWindowError: false,
+			listenWindowUnhandledRejection: false
+		})
+
+		errorCollege2.use((_self, error, meta) => {
+			return [error, meta]
+		})
+
+		await errorCollege2.add({ a: 1 }, 'Test meta 1')
+		const errors2 = await errorCollege2.getAll()
+		expect(errors2).toHaveLength(1)
+	})
+
+	it('should onError callback correctly', async () => {
+		let flag = false
+		const errorCollege = new ErrorCollege({
+			instanceId: 'test-indexedDB-onError',
+			storageType: 'indexedDB',
+			onError: (self, error, meta) => {
+				expect(self).toBe(errorCollege)
+				expect(error).toEqual({ a: 1 })
+				expect(meta).toEqual('Test meta 1')
+				flag = true
+			}
+		})
+		await errorCollege.add({ a: 1 }, 'Test meta 1')
+		expect(flag).toBe(true)
+	})
 })
