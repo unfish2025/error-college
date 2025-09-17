@@ -1,4 +1,4 @@
-import type { ErrorItem, StorageType, Options } from './types/index.js'
+import type { ErrorItem, StorageType, Options, ErrorItemOptions } from './types/index.js'
 import { idbAdd, idbGetAll, idbClear, idbClearExpired } from './createIndxDB.js'
 export type * from './types/index.js'
 
@@ -37,7 +37,6 @@ export class ErrorCollege<T extends StorageType = StorageType> {
 		return this._onError
 	}
 
-	// Overloads for getAll: conditional sync/async based on T
 	getAll(this: ErrorCollege<'indexedDB'>): Promise<ErrorItem[]>
 	getAll(this: ErrorCollege<'memory' | 'localStorage'>): ErrorItem[]
 	getAll(this: ErrorCollege<StorageType>): Promise<ErrorItem[]> | ErrorItem[]
@@ -74,18 +73,23 @@ export class ErrorCollege<T extends StorageType = StorageType> {
 		this._onError = op.onError
 		if (op.expireTime) this._expireTime = op.expireTime
 		this._useCapture = !!op.listenAssetError
-		this._onWindowError = (e: ErrorEvent) => {
-			Promise.resolve(this.add(e, { from: 'window.error' })).then(() => {
-				this._onError?.(this, e, { from: 'window.error' })
-			})
+		if (op.listenWindowError || op.listenWindowError === void 0) {
+			this._onWindowError = (e: ErrorEvent) => {
+				Promise.resolve(this.add(e, { from: 'window.error' })).then(() => {
+					this._onError?.(this, e, { from: 'window.error' })
+				})
+			}
+			window.addEventListener('error', this._onWindowError, this._useCapture)
 		}
-		window.addEventListener('error', this._onWindowError, this._useCapture)
-		this._onUnhandledRejection = (e: PromiseRejectionEvent) => {
-			Promise.resolve(this.add(e, { from: 'window.unhandledrejection' })).then(() => {
-				this._onError?.(this, e, { from: 'window.unhandledrejection' })
-			})
+		if (op.listenWindowUnhandledRejection || op.listenWindowUnhandledRejection === void 0) {
+			this._onUnhandledRejection = (e: PromiseRejectionEvent) => {
+				Promise.resolve(this.add(e, { from: 'window.unhandledrejection' })).then(() => {
+					this._onError?.(this, e, { from: 'window.unhandledrejection' })
+				})
+			}
+			window.addEventListener('unhandledrejection', this._onUnhandledRejection)
 		}
-		window.addEventListener('unhandledrejection', this._onUnhandledRejection)
+		// @ts-ignore
 		this.clearExpired()
 		if (op.hijackConsoleError) {
 			this._hijacked = true
@@ -104,7 +108,6 @@ export class ErrorCollege<T extends StorageType = StorageType> {
 		return this
 	}
 
-	// Overloads for add: chain in sync backends, Promise chain in indexedDB
 	add(this: ErrorCollege<'indexedDB'>, error: any, meta?: any): Promise<this>
 	add(this: ErrorCollege<'memory' | 'localStorage'>, error: any, meta?: any): this
 	add(this: ErrorCollege<StorageType>, error: any, meta?: any): Promise<this> | this
@@ -122,22 +125,35 @@ export class ErrorCollege<T extends StorageType = StorageType> {
 			}
 		}
 		if (this._storageType === 'memory') {
-			this._errorList.push(this.dataToInfo(data[0], data[1]))
+			this._errorList.push(this.dataToInfo({ error: data[0], meta: data[1], stack: new Error().stack || '' }))
 		} else if (this.storageType === 'localStorage') {
 			const key = `__ErrorCollege_${this.instanceId}`
 			const prev = localStorage.getItem(key)
 			const list: ErrorItem[] = prev ? JSON.parse(prev) : []
-			localStorage.setItem(key, JSON.stringify([...list, this.dataToInfo(data[0], data[1])]))
+			localStorage.setItem(
+				key,
+				JSON.stringify([...list, this.dataToInfo({ error: data[0], meta: data[1], stack: new Error().stack || '' })])
+			)
 		} else {
-			return idbAdd(this.instanceId, this.dataToInfo(data[0], data[1])).then(() => this)
+			return idbAdd(
+				this.instanceId,
+				this.dataToInfo({ error: data[0], meta: data[1], stack: new Error().stack || '' })
+			).then(() => this)
 		}
 		return this
 	}
 
-	dataToInfo(error: any, meta?: any): [string, string, string] {
-		return [this._dataToString(error), this._dataToString(meta), new Date().toISOString()]
+	dataToInfo(data: ErrorItemOptions): ErrorItem {
+		return {
+			error: this._dataToString(data.error),
+			meta: this._dataToString(data.meta),
+			createTime: new Date().toISOString(),
+			stack: this._dataToString(data.stack)
+		}
 	}
 
+	clear(this: ErrorCollege<'indexedDB'>): Promise<void>
+	clear(this: ErrorCollege<'memory' | 'localStorage'>): void
 	clear() {
 		if (this.storageType === 'memory') {
 			this._errorList = []
@@ -148,19 +164,21 @@ export class ErrorCollege<T extends StorageType = StorageType> {
 		}
 	}
 
+	clearExpired(this: ErrorCollege<'indexedDB'>): Promise<void>
+	clearExpired(this: ErrorCollege<'memory' | 'localStorage'>): void
 	clearExpired() {
 		const expire = this._expireTime
 		if (this.storageType === 'memory') {
 			const now = Date.now()
-			this._errorList = this._errorList.filter(([, , t]) => {
-				const ts = Date.parse(t ?? '')
+			this._errorList = this._errorList.filter((info) => {
+				const ts = Date.parse(info.createTime ?? '')
 				return Number.isNaN(ts) ? true : now - ts <= expire
 			})
 		} else if (this.storageType === 'localStorage') {
 			const list = this.getAll() as ErrorItem[]
 			const now = Date.now()
-			const filtered = list.filter(([, , t]) => {
-				const ts = Date.parse(t ?? '')
+			const filtered = list.filter((info) => {
+				const ts = Date.parse(info.createTime ?? '')
 				return Number.isNaN(ts) ? true : now - ts <= expire
 			})
 			localStorage.setItem(`__ErrorCollege_${this.instanceId}`, JSON.stringify(filtered))
@@ -270,10 +288,12 @@ export class ErrorCollege<T extends StorageType = StorageType> {
 
 		// join the Error Item list as a string: each item alone in one row, containing error and meta
 		const rows = errorList.map(
-			([err, meta, createTime], idx) =>
-				`#${idx + 1} ${createTime}:${colonSpace ? ' ' : ''}${err}  \n\nmeta:${
+			(info, idx) =>
+				`#${idx + 1} ${info.createTime}\n\nstack:${colonSpace ? ' ' : ''}${info.stack}\n\nerror:${
 					colonSpace ? ' ' : ''
-				}${meta}\n================================================================`
+				}${info.error}  \n\nmeta:${colonSpace ? ' ' : ''}${
+					info.meta
+				}\n================================================================`
 		)
 		const raw = rows.join(newlineChar)
 
@@ -375,7 +395,6 @@ export class ErrorCollege<T extends StorageType = StorageType> {
 		}
 	}
 
-	// 释放全局监听与 console.error 劫持
 	destroy() {
 		if (this._onWindowError) {
 			window.removeEventListener('error', this._onWindowError, this._useCapture)

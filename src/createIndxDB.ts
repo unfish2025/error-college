@@ -70,8 +70,7 @@ export async function idbClearExpired(instanceId: string, expireMs: number): Pro
 			const cursor = req.result
 			if (cursor) {
 				const val = cursor.value as unknown as ErrorItem
-				// val: [error, meta, createTime]
-				const t = Date.parse(val?.[2] ?? '')
+				const t = Date.parse(val.createTime ?? '')
 				if (!Number.isNaN(t) && now - t > expireMs) {
 					const delReq = cursor.delete()
 					delReq.onsuccess = () => cursor.continue()
